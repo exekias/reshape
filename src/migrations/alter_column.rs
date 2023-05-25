@@ -79,6 +79,29 @@ impl Action for AlterColumn {
         );
         db.run(&query).context("failed to add temporary column")?;
 
+        // add a _xata_enforce column to apply constraints on the proper schema version only
+        let query = format!(
+            r#"
+			ALTER TABLE "{table}"
+            ADD COLUMN IF NOT EXISTS _xata_enforce BOOLEAN NOT NULL DEFAULT FALSE
+			"#,
+            table = self.table,
+        );
+        db.run(&query)
+            .context("failed to add temporary validation column")?;
+
+        // add a _xata_new_schema_valid column to apply constraints on the proper schema version only
+        let query = format!(
+            r#"
+                ALTER TABLE "{table}"
+                ADD COLUMN IF NOT EXISTS _xata_new_schema_valid BOOLEAN NOT NULL GENERATED ALWAYS AS ({column} IS NOT NULL) STORED
+                "#,
+            table = self.table,
+            column = temporary_column_name,
+        );
+        db.run(&query)
+            .context("failed to add temporary validation column")?;
+
         // If up or down wasn't provided, we default to simply moving the value over.
         // This is the correct behaviour for example when only changing the default value.
         let up = self.up.as_ref().unwrap_or(&self.column);
@@ -87,7 +110,7 @@ impl Action for AlterColumn {
         let declarations: Vec<String> = table
             .columns
             .iter()
-            .filter(|column| column.name != self.column)
+            .filter(|column| column.name != self.column && column.name != "_xata_enforce")
             .map(|column| {
                 format!(
                     "{alias} public.{table}.{real_name}%TYPE := NEW.{real_name};",
@@ -109,6 +132,7 @@ impl Action for AlterColumn {
                             {existing_column} public.{table}.{existing_column_real}%TYPE := NEW.{existing_column_real};
                         BEGIN
                             NEW.{temp_column} = {up};
+                            NEW._xata_enforce = FALSE;
                         END;
                     END IF;
                     RETURN NEW;
@@ -127,6 +151,7 @@ impl Action for AlterColumn {
                             {existing_column} public.{table}.{temp_column}%TYPE := NEW.{temp_column};
                         BEGIN
                             NEW.{existing_column_real} = {down};
+                            NEW._xata_enforce = TRUE;
                         END;
                     END IF;
                     RETURN NEW;
@@ -192,7 +217,7 @@ impl Action for AlterColumn {
                 r#"
                 ALTER TABLE "{table}"
                 ADD CONSTRAINT "{constraint_name}"
-                CHECK ("{column}" IS NOT NULL) NOT VALID
+                CHECK ("{column}" IS NOT NULL OR NOT _xata_enforce) NOT VALID
                 "#,
                 table = self.table,
                 constraint_name = self.not_null_constraint_name(ctx),
