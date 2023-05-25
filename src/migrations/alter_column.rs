@@ -91,6 +91,7 @@ impl Action for AlterColumn {
             .context("failed to add temporary validation column")?;
 
         // add a _xata_new_schema_valid column to apply constraints on the proper schema version only
+        // XXX this would lock the table, we can do better (ie a view or ad-hoc query?)
         let query = format!(
             r#"
                 ALTER TABLE "{table}"
